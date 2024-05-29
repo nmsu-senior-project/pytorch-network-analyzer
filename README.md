@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-The aim of this project is to develop a deep learning model using PyTorch to analyze baseline data and identify common threat behaviors in network traffic. The model will provide alerts to cybersecurity or information security managers, helping them to protect their networks.
+The aim of this project is to develop a deep learning model using PyTorch to analyze baseline data and detect common threat behaviors in network traffic. The model will enhance cybersecurity by providing alerts and offering a comprehensive understanding of device interactions on the network. This will assist cybersecurity and information security managers in effectively protecting their networks.
 
 ## Project Overview
 
