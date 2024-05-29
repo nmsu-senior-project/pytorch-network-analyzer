@@ -4,6 +4,7 @@
 
 The aim of this project is to develop a deep learning model using PyTorch to analyze baseline data and detect common threat behaviors in network traffic. The model will enhance cybersecurity by providing alerts and offering a comprehensive understanding of device interactions on the network. This will assist cybersecurity and information security managers in effectively protecting their networks.
 
+
 ## Project Overview
 
 ### Data Processing and Baseline Creation
@@ -29,6 +30,7 @@ The aim of this project is to develop a deep learning model using PyTorch to ana
     - Create daily baselines that contribute to weekly, monthly, and yearly summaries.
     - Ensure all daily baselines are preserved to facilitate long-term analysis and context understanding.
 
+
 ### Threat Analysis Using PyTorch
 
 1. **Real-Time Data Analysis**:
@@ -38,6 +40,7 @@ The aim of this project is to develop a deep learning model using PyTorch to ana
 2. **Alerting and Reporting**:
     - PyTorch will evaluate devices with concerning flags and anomalies.
     - Alerts and ratings of concern will be communicated to security managers or relevant personnel.
+
 
 ## Project Workflow
 
@@ -54,14 +57,17 @@ The aim of this project is to develop a deep learning model using PyTorch to ana
 4. **Alert Generation**:
     - Generate alerts or concern ratings based on analysis, and notify security managers.
 
-## Goals and Challenges
 
-1. **Efficient Batch Processing**:
-    - Aim to process network packet traffic in manageable batches for immediate analysis and storage.
-    - Ensure continuous traffic monitoring by sequentially processing these batches.
+## Future Goals for the Project
 
-2. **PCAP File Management**:
-    - Create and maintain PCAP files for future reference and in-depth analysis when required.
+1. **Automated Batch Processing**:
+    - Transition from manually scanning PCAP files to automated processes for creating baselines and training the PyTorch model.
+    - Aim to handle network packet traffic in manageable batches or through real-time capture for immediate analysis and storage.
+    - Ensure continuous traffic monitoring by processing these batches sequentially.
+
+2. **Enhanced PCAP File Management**:
+    - Develop a robust system for creating and maintaining PCAP files to facilitate future reference and in-depth analysis as needed.
+
 
 ## Summary
 
