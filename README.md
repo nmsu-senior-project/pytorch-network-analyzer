@@ -67,6 +67,10 @@ The aim of this project is to develop a deep learning model using PyTorch to ana
 
 2. **Enhanced PCAP File Management**:
     - Develop a robust system for creating and maintaining PCAP files to facilitate future reference and in-depth analysis as needed.
+    
+3. **Django Interface**:
+    - Web interface (Django) to display alerts and suspicious activity from the PyTorch model.
+    - Users can review and approve traffic, improving model accuracy over time.
 
 
 ## Summary
