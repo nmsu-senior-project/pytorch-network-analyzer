@@ -1,2 +1,3 @@
 venv/
 pcap_files/
+analyzer/credentials.txt
