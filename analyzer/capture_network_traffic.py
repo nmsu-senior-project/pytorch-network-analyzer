@@ -1,8 +1,9 @@
 import os,sys, time, subprocess
+from scan_network_traffic import begin_scan
 
 from datetime import datetime
 
-import mysql.connector
+import mysql.connector as mysql
 from scapy.all import sniff, wrpcap, Ether, IP, TCP, UDP, Raw
 from scapy.arch.windows import get_windows_if_list
 
@@ -16,20 +17,48 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 #Array 
 captured_packets = []
 
-
-def read_credentials(filename):
-    credentials = {}
+def read_specific_lines(filename, line_numbers):
+  credentials = {}
+  try:
     with open(filename, 'r') as file:
-        for line in file:
-            key, value = line.strip().split(':')
-            credentials[key.strip()] = value.strip()
-    return credentials
+      for line_number in line_numbers:
+        # Check for valid line number (within file size)
+        if line_number <= 0 or line_number > len(file.readlines()):
+          print(f"Invalid line number: {line_number}")
+          return None
 
+        # Seek to the beginning of the desired line
+        file.seek(0)  # Reset file pointer to beginning
 
-# Credential collection
-credentials = read_credentials('credentials.txt')
-db_user = credentials.get('db_user')
-db_pass = credentials.get('db_pass')
+        # Skip lines before the desired line
+        for _ in range(line_number - 1):
+          file.readline()
+
+        # Read and process the current line
+        line = file.readline().strip()
+        if line:  # Check if line is not empty
+          key, value = line.split(':')
+          credentials[key.strip()] = value.strip()
+
+  except FileNotFoundError:
+    print(f"The file {filename} was not found.")
+    return None
+
+  # Check if any lines were successfully read
+  if not credentials:
+    print(f"No valid lines found for numbers: {line_numbers}")
+    return None
+
+  return credentials
+
+# Example usage
+credentials = read_specific_lines('credentials.txt', [1, 2])
+
+if credentials:
+  db_user = credentials.get('db_user')
+  db_pass = credentials.get('db_pass')
+else:
+  print("Failed to read credentials.")
 
 
 def print_divider(length, newline_count):
@@ -43,7 +72,7 @@ def truncate_table(cursor, tb_name):
 def create_database_and_table(cursor, db_name, tb_name):
     cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
 
-    if input(f"Do you want to clear {tb_name} table? Type (clear or no): ") == "clear":
+    if input(f'Do you want to clear {tb_name} table? Type "clear" or press Enter): ') == "clear":
         truncate_table(cursor, tb_name)
     else:
         cursor.execute(f"USE {db_name}")
@@ -51,14 +80,15 @@ def create_database_and_table(cursor, db_name, tb_name):
         CREATE TABLE IF NOT EXISTS raw_packets (
             id INT AUTO_INCREMENT PRIMARY KEY,
             timestamp DATETIME NOT NULL,
-            source_mac VARCHAR(17) NOT NULL,
+            source_mac VARCHAR(17),
             source_ip VARCHAR(45),
             destination_ip VARCHAR(45),
             source_port INT,
             destination_port INT,
-            protocol VARCHAR(10) NOT NULL,
+            protocol VARCHAR(10),
             payload BLOB,
-            processed TINYINT DEFAULT 0
+            processed TINYINT DEFAULT 0,
+            is_vpn TINYINT DEFAULT 0
         );
         """)
 
@@ -78,13 +108,12 @@ def packet_to_db(packet, db_config):
     protocol = packet.sprintf("%IP.proto%") if IP in packet else None
     payload = bytes(packet[Raw].load) if Raw in packet else None
 
-    if source_mac and protocol:
-        connection = mysql.connector.connect(**db_config)
-        cursor = connection.cursor()
-        cursor.execute(insert_query, (timestamp, source_mac, source_ip, destination_ip, source_port, destination_port, protocol, payload))
-        connection.commit()
-        cursor.close()
-        connection.close()
+    connection = mysql.connect(**db_config)
+    cursor = connection.cursor()
+    cursor.execute(insert_query, (timestamp, source_mac, source_ip, destination_ip, source_port, destination_port, protocol, payload))
+    connection.commit()
+    cursor.close()
+    connection.close()
 
 
 def capture_traffic(interface_name, db_config):
@@ -110,7 +139,10 @@ def capture_traffic(interface_name, db_config):
         packet_time_started = datetime.now().strftime("%Y-%m-%d_%H-%M")
         time.sleep(2)
         print("Started capture at " + packet_time_started)
+
+        #scan the network
         sniff(iface=interface_name, prn=store_packet, timeout=TIMEOUT, stop_filter=lambda _: packet_count >= PACKET_LIMIT)
+        
         packet_time_ended = datetime.now().strftime("%Y-%m-%d_%H-%M")
         print("Ended capture at " + packet_time_ended)
         print(f"Total packet count: {str(packet_count)} \n")
@@ -121,14 +153,13 @@ def capture_traffic(interface_name, db_config):
         print(f"Captured packets written to {pcap_filename}")
 
         print("Capture completed.")
-
-        #Start the scanning packet process by opening py file
-        subprocess.run(['python', 'scan_network_traffic.py'])
     except Exception as e:
         print(f"Error capturing traffic on {interface_name}: {e}")
 
 
 def main():
+    connection = None
+
     # Connect to database
     try:
         db_config = {
@@ -137,7 +168,7 @@ def main():
             'host': 'localhost',
             'port': 3306
         }
-        connection = mysql.connector.connect(**db_config)
+        connection = mysql.connect(**db_config)
         cursor = connection.cursor()
         print_divider(80, 1)
         database_name = input("Enter database name you need to create or use: ")
@@ -157,7 +188,7 @@ def main():
         create_database_and_table(cursor, database_name, table_name)
         cursor.close()
         connection.close()
-    except mysql.connector.Error as err:
+    except mysql.Error as err:
         print(f"Error: {err}")
         sys.exit()
 
@@ -178,9 +209,15 @@ def main():
         if any(interface['name'] == interface_name for interface in interfaces):
             db_config['database'] = f'{database_name}'
             capture_traffic(interface_name, db_config)
+
+            # subprocess.run(['python', 'scan_network_traffic.py', f'{database_name}', f'{table_name}'])
             break  # Exit after capturing on one interface
         else:
             print("Invalid interface name. Please try again.")
+
+    #Start the scanning packet process by opening py file
+    begin_scan(database_name, table_name)
+    sys.exit()
 
 if __name__ == "__main__":
     main()
