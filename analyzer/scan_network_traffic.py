@@ -87,25 +87,6 @@ def begin_scan(db_name, tb_name):
             print("No unprocessed packets found.")
             break
 
-        # if raw_packet:
-        #     packet_id = raw_packet[0]
-        #     payload = raw_packet[1]
-        #     print(f"Processing packet ID: {packet_id}")
-
-        #     # Check for VPN protocols
-        #     vpn_detected, protocol = check_for_vpn(payload)
-        #     if vpn_detected:
-        #         print(f"VPN protocol detected: {protocol}")
-        #         # Update the 'is_vpn' column in the database
-        #         cursor.execute(f"UPDATE {tb_name} SET is_vpn = 1 WHERE id = {packet_id};")
-        #         mysqlcon.commit()
-        #         print(f"Packet ID {packet_id} marked as VPN in the database.")
-
-        #         packet_time_started = datetime.now().strftime("%Y-%m-%d_%H-%M")
-
-        # packet_time_ended = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        # print("Ended scanning at " + packet_time_ended)
-
 
 # if __name__ == "__main__":
 #     main()
