@@ -2,14 +2,26 @@
 
 ## How to use project
 
-### First you need to clone the repo.
 1. **Ensure you have git downloaded.**
     - Go to https://www.git-scm.com/ to download the most recent version.
 2. **Cloning the project**
     - Go to the command line or Git Bash which should be installed when installing Git. I prefer using Git Bash. Once you are in there go to the             directory you would like to clone the repo too.
     - Once you are there use this command: **git clone https://github.com/nmsu-senior-project/pytorch-network-analyzer.git**
     - You should now see a new folder named pytorch-network-analyzer
-3. 
+3. **Python venv creation and activation**
+    - Prior installation of VENV may be needed. VENV creates a virtual environment (venv) for our project to run which allows us to install modules          and libraries in to the venv without impacting other projects or vice versa.
+    - Change your directory in the command line to the newly cloned project folder and paste this command **python -m venv venv**
+    - You should see another folder created within the project folder.
+    - **YOU WILL WANT TO ACTIVATE THIS BEFORE RUNNING THE PROJECT EVERY TIME.**
+    - In order to activate the venv go to the command line and type **source venv/Scripts/activate** for Windows and **source venv/bin/activate** for        Linux.
+4. **Install Libraries**
+    - In the command line after the activation of your venv complete these commands:
+        - **pip install scapy mysql-connector-python**
+5. **Create a MySQL server on your local machine**
+    - Install MySQL from this link: https://dev.mysql.com/downloads/installer/
+    - Create a basic localhost server or custom domain server whichever you may need.
+    - You can utilize application such as DBeaver to connect to your localhost server if you need a GUI.
+    - Inside DBeaver you can create some basic user that have basic permissions. I recommend three users espically if you are using just the basic          MYSQL server application you will need it order to have multiple queries taking place at once.
 
 ## Project Purpose
 
