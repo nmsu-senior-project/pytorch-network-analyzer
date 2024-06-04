@@ -1,5 +1,16 @@
 # PyTorch Network Analyzer
 
+## How to use project
+
+### First you need to clone the repo.
+1. **Ensure you have git downloaded.**
+    - Go to https://www.git-scm.com/ to download the most recent version.
+2. **Cloning the project**
+    - Go to the command line or Git Bash which should be installed when installing Git. I prefer using Git Bash. Once you are in there go to the             directory you would like to clone the repo too.
+    - Once you are there use this command: **git clone https://github.com/nmsu-senior-project/pytorch-network-analyzer.git**
+    - You should now see a new folder named pytorch-network-analyzer
+3. 
+
 ## Project Purpose
 
 The aim of this project is to develop a deep learning model using PyTorch to analyze baseline data and detect common threat behaviors in network traffic. The model will enhance cybersecurity by providing alerts and offering a comprehensive understanding of device interactions on the network. This will assist cybersecurity and information security managers in effectively protecting their networks.
