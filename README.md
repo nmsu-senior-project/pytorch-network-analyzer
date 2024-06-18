@@ -21,7 +21,16 @@
     - Install MySQL from this link: https://dev.mysql.com/downloads/installer/
     - Create a basic localhost server or custom domain server whichever you may need.
     - You can utilize application such as DBeaver to connect to your localhost server if you need a GUI.
-    - Inside DBeaver you can create some basic user that have basic permissions. I recommend three users espically if you are using just the basic          MYSQL server application you will need it order to have multiple queries taking place at once.
+    - Inside DBeaver you can create some basic users that have basic permissions. I recommend three users espically if you are using just the basic          MYSQL server application you will need it in order to have multiple queries taking place at once.
+      
+    - After creating these users on your MySQL server create a credentials.txt file within the analyzer directory that stores the users login information in this manner. This is an example not real use case:
+    - db_user:nmsu_user1
+    - db_pass:gravity_is_an_illusion2024
+    - db_user:nmsu_user2
+    - db_pass:gravity_is__an_illusion2025
+    - db_user:nmsu_user3
+    - db_pass:gravity_is_an_illusion2026
+  
 
 ## Project Purpose
 
