@@ -27,9 +27,9 @@
     - db_user:nmsu_user1
     - db_pass:gravity_is_an_illusion2024
     - db_user:nmsu_user2
-    - db_pass:gravity_is_illusion2025
+    - db_pass:gravity_is__an_illusion2025
     - db_user:nmsu_user3
-    - db_pass:gravity_is_illusion2026
+    - db_pass:gravity_is_an_illusion2026
   
 
 ## Project Purpose
