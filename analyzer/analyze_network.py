@@ -57,16 +57,16 @@ def begin_scan(db_name, tb_name):
         # Fetch the first unprocessed packet
         cursor = mysqlcon.cursor()
         cursor.execute(f"USE {str(db_name)}")
-        cursor.execute(f"SELECT * FROM {str(tb_name)} WHERE processed = 0 ORDER BY id;")
-        raw_packets = cursor.fetchall()
+        cursor.execute(f"SELECT * FROM captured_packets WHERE analyzed = 0 ORDER BY id;")
+        captured_packets = cursor.fetchall()
 
-        if raw_packets:
-            for packet in raw_packets:
+        if captured_packets:
+            for packet in captured_packets:
                 packet_id = packet[0]
                 protocol = packet[7]
 
                 print(packet)
-                cursor.execute(f"UPDATE {tb_name} SET processed = 1 WHERE id = {packet[0]};")
+                cursor.execute(f"UPDATE {tb_name} SET analyzed = 1 WHERE id = {packet[0]};")
                 print(f"Processing packet ID: {packet_id}")
 
                 # Check for VPN protocols
@@ -86,7 +86,3 @@ def begin_scan(db_name, tb_name):
         else:
             print("No unprocessed packets found.")
             break
-
-
-# if __name__ == "__main__":
-#     main()
