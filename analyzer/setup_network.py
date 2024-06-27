@@ -1,59 +1,28 @@
+import asyncio
+import os
 import sys
 import mysql.connector as mysql
 
-from capture_network import begin_capture
-
 # Constants
+CREDENTIALS_FILENAME = 'credentials.txt'
+CREDENTIALS_LOCATION = os.path.join(os.getcwd(), CREDENTIALS_FILENAME)
 DATABASE_NAME = "network"
 TABLE_NAME = "captured_packets"
-INTERFACE_NAME = "Ethernet 2"
+INTERFACE_NAME = "Wi-Fi"
 DB_CONFIG = {
     'user': None,  # Placeholder for actual value from credentials
     'password': None,  # Placeholder for actual value from credentials
     'host': 'localhost',
     'port': 3306,
-    'auth_plugin': 'mysql_native_password'  # Specify the authentication plugin here if needed
+    # 'auth_plugin': 'mysql_native_password'  # Specify the authentication plugin here if needed
 }
-
-
-def read_specific_lines(filename, line_numbers):
-    credentials = {}
-    try:
-        with open(filename, 'r') as file:
-            lines = file.readlines()
-            for line_number in line_numbers:
-                # Check for valid line number (within file size)
-                if line_number <= 0 or line_number > len(lines):
-                    print(f"Invalid line number: {line_number}")
-                    return None
-
-                # Read and process the current line
-                line = lines[line_number - 1].strip()
-                if line:  # Check if line is not empty
-                    key, value = line.split(':')
-                    credentials[key.strip()] = value.strip()
-
-    except FileNotFoundError:
-        print(f"The file {filename} was not found.")
-        return None
-
-    # Check if any lines were successfully read
-    if not credentials:
-        print(f"No valid lines found for numbers: {line_numbers}")
-        return None
-
-    return credentials
 
 
 def create_database_and_tables(cursor):
     try:
-        # Create database if not exists
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DATABASE_NAME}")
-
-        # Use the database
         cursor.execute(f"USE {DATABASE_NAME}")
 
-        # Create tables if not exists
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ip_addresses (
                 ip_address VARCHAR(45) PRIMARY KEY,
@@ -70,7 +39,7 @@ def create_database_and_tables(cursor):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS captured_packets (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                timestamp DATETIME NOT NULL,
+                timestamp DATETIME,
                 source_mac VARCHAR(17),
                 destination_mac VARCHAR(17),
                 source_ip VARCHAR(45),
@@ -178,12 +147,37 @@ def create_database_and_tables(cursor):
         sys.exit()
 
 
+def read_specific_lines(filename, line_numbers):
+    credentials = {}
+    # Construct an absolute path to the file
+    script_dir = os.path.dirname(__file__)  # Directory of the script
+    filepath = os.path.join(script_dir, filename)  # Path to the file
+
+    try:
+        with open(filepath, 'r') as file:
+            lines = file.readlines()
+            for line_number in line_numbers:
+                if line_number <= 0 or line_number > len(lines):
+                    print(f"Invalid line number: {line_number}")
+                    return None
+                line = lines[line_number - 1].strip()
+                if line:
+                    key, value = line.split(':')
+                    credentials[key.strip()] = value.strip()
+    except FileNotFoundError:
+        print(f"The file {filepath} was not found.")
+        return None
+    if not credentials:
+        print(f"No valid lines found for numbers: {line_numbers}")
+        return None
+    return credentials
+
+
 def connection_and_creation():
     connection = None
     cursor = None
 
     try:
-        # Read credentials from file
         credentials = read_specific_lines('credentials.txt', [1, 2])
 
         if credentials:
@@ -195,11 +189,9 @@ def connection_and_creation():
             print("Failed to read credentials.")
             sys.exit()
 
-        # Connect to database
         connection = mysql.connect(**DB_CONFIG)
         cursor = connection.cursor()
 
-        # Create database and tables
         create_database_and_tables(cursor)
 
     except mysql.Error as err:
@@ -213,16 +205,20 @@ def connection_and_creation():
             connection.close()
 
 
+async def main():
+    # Initialize your connection and setup tasks here if needed
+    connection_and_creation()
+
+    capture_command = ['python', 'capture_network.py']
+    analysis_command = ['python', 'analyze_network.py']
+
+    capture_process = await asyncio.create_subprocess_exec(*capture_command)
+    await capture_process.wait()
+
+    analysis_process = await asyncio.create_subprocess_exec(*analysis_command)
+    await analysis_process.wait()
+
+    # Any additional asyncio tasks can be added here
+
 if __name__ == '__main__':
-    while True:
-        credentials = read_specific_lines('credentials.txt', [1, 2])
-
-        if credentials:
-            db_user = credentials.get('db_user')
-            db_pass = credentials.get('db_pass')
-        else:
-            print("Failed to read credentials.")
-            break
-
-        connection_and_creation()
-        begin_capture(DATABASE_NAME, TABLE_NAME, INTERFACE_NAME, DB_CONFIG)
+    asyncio.run(main())

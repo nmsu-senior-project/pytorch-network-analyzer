@@ -1,18 +1,13 @@
-import logging
 import re
-import os,sys, time, subprocess
-from analyze_network import begin_scan
+import os, time
 
 from datetime import datetime
 
-import pandas as pd
 import mysql.connector as mysql
-from scapy.arch.windows import get_windows_if_list
-from scapy.all import sniff, wrpcap, rdpcap, Ether, LLC, IP, TCP, UDP, Raw, ARP, ICMP, DNS, STP
-from scapy.contrib.igmp import IGMP
-from scapy.layers.http import HTTP
-from scapy.layers.inet6 import _ICMPv6 as ICMPv6, IPv6
+from scapy.all import sniff, wrpcap, rdpcap, Ether, IP, TCP, UDP, Raw
+from scapy.layers.inet6 import IPv6
 
+from setup_network import INTERFACE_NAME, DB_CONFIG, DATABASE_NAME, TABLE_NAME
 
 # Constants
 PACKET_LIMIT = 1000
@@ -21,80 +16,15 @@ OUTPUT_DIR = "pcap_files"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-protocol_dict = {}
+pcap_filename = None
 captured_packets = []
 
 
-def print_divider(length, newline_count):
-    print('-' * length + "\n" * newline_count)
+def connect_to_db(db_config):
+    connection = mysql.connect(**db_config)
+    cursor = connection.cursor()
 
-
-def port_to_dict():
-    # Define the path to the CSV file
-    csv_file_path = 'resources/service-names-port-numbers.csv'
-
-    # Load the CSV file into a DataFrame
-    protocol_data = pd.read_csv(csv_file_path)
-
-    global protocol_dict
-
-    # Populate the dictionary with port numbers as keys and a list of service-protocol pairs as values
-    for _, row in protocol_data.iterrows():
-        application_protocol = row['Service Name']
-        port_number = row['Port Number']
-        transport_protocol = str(row['Transport Protocol']).lower()  # Convert protocol to lowercase
-
-        # Check for valid data and convert port number to integer
-        if pd.notna(application_protocol) and pd.notna(port_number) and pd.notna(str(transport_protocol)):
-            try:
-                port_number = int(port_number)
-                if port_number not in protocol_dict:
-                    protocol_dict[port_number] = []
-                protocol_dict[port_number].append(f"{application_protocol} ({str(transport_protocol)})")
-            except ValueError:
-                continue
-
-
-def capture_traffic(interface_name, db_config):
-    """Captures traffic on the specified interface and stores packets in a list."""
-    print_divider(80, 1)
-
-    print(f"Starting capture on interface {interface_name}:")
-    print_divider(41, 0)
-    packet_count = 0
-
-    try:
-        # # Define a callback function to store each packet in the captured_packets list
-        def store_packet(pkt):
-            nonlocal packet_count
-            packet_count += 1
-            captured_packets.append(pkt)
-        #     packet_to_db(pkt, db_config)
-
-        #     if packet_count >= PACKET_LIMIT:
-        #         return False  # Returning False stops the packet capture
-
-        # Start packet capture, using the store_packet callback to store each packet
-        packet_time_started = datetime.now().strftime("%Y-%m-%d_%H-%M")
-
-        print("Started capture at " + packet_time_started)
-
-        #scan the network
-        sniff(iface=interface_name, prn=store_packet, timeout=TIMEOUT, stop_filter=lambda _: packet_count == PACKET_LIMIT)
-        
-        packet_time_ended = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        print("Ended capture at " + packet_time_ended)
-        print(f"Total packet count: {str(packet_count)} \n")
-
-        # Write captured packets to a PCAP file
-        # FYI: Comment these three lines if PCAP creation is not needed.
-        pcap_filename = os.path.join(OUTPUT_DIR, f"{interface_name}-({packet_time_started})-({packet_time_ended}).pcap")
-        wrpcap(pcap_filename, captured_packets)
-
-    except Exception as e:
-        print(f"Error capturing traffic on {interface_name}: {e}")
-    
-    return pcap_filename
+    return cursor, connection
 
 
 def determine_protocol(packet):
@@ -136,11 +66,11 @@ def determine_protocol(packet):
     return protocol_array
 
 
-def packet_to_db(pcap_filename, db_config):
+def packet_to_db(pcap_filename):
     """Inserts packet data into the database."""
+
     # Connect to the database
-    connection = mysql.connect(**db_config)
-    cursor = connection.cursor()
+    cursor, connection = connect_to_db(DB_CONFIG)
 
     packets = rdpcap(pcap_filename)
 
@@ -164,17 +94,19 @@ def packet_to_db(pcap_filename, db_config):
         payload = bytes(packet[Raw].load) if Raw in packet else None
 
         # Update database schema (if needed)
-        insert_query = """
-        INSERT INTO captured_packets (timestamp, source_mac, destination_mac, source_ip, destination_ip, source_port, destination_port, ethernet_type, network_protocol, transport_protocol, application_protocol, payload)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+        insert_query = (
+            f"INSERT INTO {TABLE_NAME} (timestamp, source_mac, destination_mac, source_ip, destination_ip, "
+            f"source_port, destination_port, ethernet_type, network_protocol, transport_protocol, "
+            f"application_protocol, payload) "
+            f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        )
 
         try:
             # Execute the insertion query
-            cursor.execute(f"USE network")
+            cursor.execute(f"USE {DATABASE_NAME}")
             cursor.execute(insert_query, (timestamp, source_mac, destination_mac, source_ip, destination_ip, source_port, destination_port, ethernet_type, network_protocol, transport_protocol, application_protocol, payload))
             connection.commit()
-            print("Packet successfully inserted into database.")
+            # print("Packet successfully inserted into database.")
         except mysql.Error as err:
             print(f"Error inserting packet into database DETAILS: {err}")
 
@@ -182,7 +114,37 @@ def packet_to_db(pcap_filename, db_config):
     cursor.close()
 
 
-def begin_capture(database_name, table_name, interface_name, db_config):
-    port_to_dict()
-    pcap_filename = capture_traffic(interface_name, db_config)
-    packet_to_db(pcap_filename, db_config)
+def capture_traffic():
+    """Captures traffic on the specified interface and stores packets in a list."""
+    packet_count = 0
+    start_time = time.time()
+    packet_time_started = datetime.now().strftime("%Y-%m-%d_%H-%M")
+
+    try:
+        # # Define a callback function to store each packet in the captured_packets list
+        def store_packet(pkt):
+            nonlocal packet_count
+            packet_count += 1
+            captured_packets.append(pkt)
+
+
+        #scan the network
+        sniff(iface=INTERFACE_NAME, prn=store_packet, timeout=TIMEOUT, stop_filter=lambda _: packet_count == PACKET_LIMIT)
+        
+        packet_time_ended = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        print(f"Capture in {time.time() - start_time} seconds.")
+        print(f"Total packet count: {str(packet_count)} \n")
+
+        # Write captured packets to a PCAP file
+        # FYI: Comment these three lines if PCAP creation is not needed.
+        pcap_filename = os.path.join(OUTPUT_DIR, f"{INTERFACE_NAME}-({packet_time_started})-({packet_time_ended}).pcap")
+        wrpcap(pcap_filename, captured_packets)
+
+    except Exception as e:
+        print(f"Error capturing traffic on {INTERFACE_NAME}: {e}")
+    
+    return pcap_filename
+
+# Main function
+pcap_filename = capture_traffic()
+packet_to_db(pcap_filename)
