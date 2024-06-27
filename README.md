@@ -66,6 +66,9 @@ Open a new Command Prompt window and verify MySQL is recognized:
 mysql -u root -p
 ```
 
+#### MySQL Database and User Creation Commands ####
+![MySQL Commands](resources/mysql.png)
+
 ### Setting Up Database Credentials
 
 Create a `credentials.txt` file in the `analyzer` directory with MySQL user credentials:
