@@ -8,13 +8,15 @@ CREDENTIALS_FILENAME = 'credentials.txt'
 CREDENTIALS_LOCATION = os.path.join(os.getcwd(), CREDENTIALS_FILENAME)
 DATABASE_NAME = "network"
 TABLE_NAME = "captured_packets"
+
 INTERFACE_NAME = "Wi-Fi"
+
 DB_CONFIG = {
-    'user': None,  # Placeholder for actual value from credentials
-    'password': None,  # Placeholder for actual value from credentials
+    'user': None,
+    'password': None, 
     'host': 'localhost',
     'port': 3306,
-    # 'auth_plugin': 'mysql_native_password'  # Specify the authentication plugin here if needed
+    # 'auth_plugin': 'mysql_native_password'
 }
 
 
