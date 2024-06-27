@@ -74,12 +74,12 @@ mysql -u root -p
 Create a `credentials.txt` file in the `analyzer` directory with MySQL user credentials:
 
 ```
-db_user:nmsu_user1
-db_pass:gravity_is_an_illusion2024
-db_user:nmsu_user2
-db_pass:gravity_is_an_illusion2025
-db_user:nmsu_user3
-db_pass:gravity_is_an_illusion2026
+db_user:user1
+db_pass:password1
+db_user:user2
+db_pass:password2
+db_user:user3
+db_pass:password3
 ```
 
 ## Project Overview
