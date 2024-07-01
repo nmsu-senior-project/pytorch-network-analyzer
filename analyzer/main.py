@@ -141,7 +141,7 @@ def fetch_primary_key(cursor, sql_command):
     cursor.execute(f"{sql_command}")
     result = cursor.fetchone()
     if result is not None:
-        return False
+        return False #If the primary key exists
     return True
 
 
@@ -646,8 +646,15 @@ def check_for_vpn(protocol):
 # -------------------------------------------- #
 
 def analyze_packet():
+    """
+    Analyzes each packet and sets flags for things like VPN detection,
+    ARP detection, etc. This function will be inserting and
+    updating the analyzed_packets table which will contain a one-to-
+    one relationship with the captured_packets table. This will allow
+    for easy tracking of the packets that have been analyzed and
+    flagged for further analysis.
+    """
     # Placeholder for packet analysis
-    # This function will be implemented later
     pass
 
 
@@ -655,6 +662,10 @@ def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
     """Analyze the NIC and retrieve relevant data points."""
     if mac_address:
         try:
+            """
+            If NIC is new, insert into nic_record and nic_stats.
+            The is_nic_new function will return True if the NIC is new
+            """
             if is_nic_new(mac_address, cursor):
                 execute_and_commit(
                     cursor, connection,
@@ -676,24 +687,46 @@ def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
                     """, 
                     (mac_address, timestamp)
                 )
+            else:
+                """
+                If NIC is not new to the nic_record table, update the
+                last_seen and last_updated timestamps in their
+                respective tables. 
+                """
+                execute_and_commit(
+                    cursor, connection,
+                    """
+                    UPDATE nic_record
+                        SET last_seen = %s
+                        WHERE mac_address = %s;
+                    """,
+                    (timestamp, mac_address)
+                )
+                execute_and_commit(
+                    cursor, connection,
+                    """
+                    UPDATE nic_stats
+                        SET last_updated = %s
+                        WHERE nic = %s;
+                    """,
+                    (timestamp, mac_address)
+                )
         except mysql.Error as err:
             print(f"Error: {err}")
-        finally:
-            execute_and_commit(
-                cursor, connection,
-                """
-                UPDATE nic_record
-                    SET last_seen = %s
-                    WHERE mac_address = %s;
-                """,
-                (timestamp, mac_address)
-            )
 
 
 def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
-    """Analyze the IP address and retrieve relevant data points."""
+    """
+    Analyze the IP address and retrieve relevant data points.
+
+    The use of if ip_address is to ensure that the IP address is not
+    empty or None. This is to prevent any errors that may occur
+    specifically with ARP packets which do not contain an destination
+    IP address.
+    """
     if ip_address:
         try:
+            # Check if the IP address is new to the ip_addresses table
             if is_ip_new(ip_address, cursor):
                 is_ipv6 = 1 if ":" in ip_address else 0
                 execute_and_commit(
@@ -815,7 +848,7 @@ def packet_analysis():
                     application_protocol = packet[11]
                     payload = packet[12]
 
-                    analyze_packet()
+                    analyze_packet() # Placeholder for future use
 
                     analyze_nic(
                         source_mac, source_ip, timestamp, 
