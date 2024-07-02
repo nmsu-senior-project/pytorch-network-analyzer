@@ -659,7 +659,13 @@ def analyze_packet():
 
 
 def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
-    """Analyze the NIC and retrieve relevant data points."""
+    """
+    Analyze the NIC and retrieve relevant data points.
+    
+    The use of 'if mac_address' is to ensure that the MAC address is
+    not empty or None. This is to prevent any errors that may occur
+    specifically with ARP packets which do not contain a source MAC
+    """
     if mac_address:
         try:
             """
@@ -719,10 +725,10 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
     """
     Analyze the IP address and retrieve relevant data points.
 
-    The use of if ip_address is to ensure that the IP address is not
+    The use of 'if ip_address' is to ensure that the IP address is not
     empty or None. This is to prevent any errors that may occur
-    specifically with ARP packets which do not contain an destination
-    IP address.
+    specifically with ARP request packets which do not contain an 
+    destination IP address.
     """
     if ip_address:
         try:
@@ -878,6 +884,7 @@ def packet_analysis():
                         (source_mac,)
                     )
                     
+                    #If statement is used to prevent errors with ARP packets
                     if destination_mac:
                         execute_and_commit(
                             cursor, connection,
@@ -888,6 +895,7 @@ def packet_analysis():
                             """,
                             (destination_mac,)
                         )
+
                     execute_and_commit(
                         cursor, connection,
                         """
@@ -945,6 +953,46 @@ def has_packet_count_changed(mac_address, total_packet_count, cursor):
         """,
         (mac_address,)
     )
+
+
+def has_packet_rate_changed(mac_address, packet_rate, cursor):
+    #future use
+    pass
+
+
+def has_packet_size_changed(mac_address, packet_size, cursor):
+    #future use
+    pass
+
+
+def has_peak_packet_rate_changed(mac_address, peak_packet_rate, cursor):
+    #future use
+    pass
+
+
+def has_peak_bandwidth_changed(mac_address, peak_bandwidth, cursor):
+    #future use
+    pass
+
+
+def has_most_common_protocol_changed(mac_address, protocol, cursor):
+    #future use
+    pass
+
+
+def has_most_common_source_ip_changed(mac_address, source_ip, cursor):
+    #future use
+    pass
+
+
+def has_most_common_destination_ip_changed(mac_address, destination_ip, cursor):
+    #future use
+    pass
+
+
+def has_top_five_destination_nic_changed(mac_address, packet_error_rate, cursor):
+    #future use
+    pass
 
 # ----------------------------------------------------------------- #
 # Primary function that builds and modifies baselines on stat data. #
