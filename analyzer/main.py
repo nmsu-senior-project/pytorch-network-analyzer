@@ -9,8 +9,7 @@
 | \ | | ___| |___      _____  _ __| | __  
 |  \| |/ _ \ __\ \ /\ / / _ \| '__| |/ /  
 | |\  |  __/ |_ \ V  V / (_) | |  |   <   
-|_| \_|\___|\__| \_/\_/ \___/|_|  |_|\_\  
-                                          
+|_| \_|\___|\__| \_/\_/ \___/|_|  |_|\_\                                         
     _                _                    
    / \   _ __   __ _| |_   _ _______ _ __ 
   / _ \ | '_ \ / _` | | | | |_  / _ \ '__|
@@ -43,6 +42,11 @@ packet analysis, and other functions. The constants and variables
 defined here are used to configure the program and set up the database
 and tables for the network analyzer.
 
+There are three sets of database configurations defined here. This is
+because the community edition of MySQL only allows a limited number of
+connections. By defining three sets of database configurations, the
+program can connect to three different databases simultaneously.
+
 This is the location where you can change the database configuration,
 values, and other settings for the network analyzer. You can also
 define the packet analysis constants and other settings here.
@@ -53,11 +57,18 @@ functionality.
 
 """
 
-#Capture, Database, and Scapy Constants
+# ----------------------------------- #
+# Database, Scapy, Capture Constants.
+# ----------------------------------- #
+
+# MySQL Database Constants
 DATABASE_NAME = "network"
 TABLE_NAME = "captured_packets"
-INTERFACE_NAME = "Wi-Fi"
 
+# Scapy uses this interface name for packet capture stage
+INTERFACE_NAME = "Ethernet 2" 
+
+# Capture connection
 DB_CONFIG_1 = {
     'user': 'user1',
     'password': 'password1',
@@ -66,6 +77,7 @@ DB_CONFIG_1 = {
     'auth_plugin': 'mysql_native_password'
 }
 
+# Analysis connection
 DB_CONFIG_2 = {
     'user': 'user2',
     'password': 'password2',
@@ -74,6 +86,7 @@ DB_CONFIG_2 = {
     'auth_plugin': 'mysql_native_password'
 }
 
+# Baseline connection
 DB_CONFIG_3 = {
     'user': 'user3',
     'password': 'password3',
@@ -82,24 +95,34 @@ DB_CONFIG_3 = {
     'auth_plugin': 'mysql_native_password'
 }
 
-# Analysis Constants
-PACKET_LIMIT = 1000
-TIMEOUT = 30  # seconds
-OUTPUT_DIR = "pcap_files"  # Output directory for PCAP files
+# Capture Constants
+PACKET_LIMIT = 1000 # Maximum number of packets to capture
+TIMEOUT = 30  # Capture timeout in seconds
+
+# Output directory for PCAP files
+OUTPUT_DIR = "pcap_files" 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-# Common VPN protocols for packet analysis and detection
+
+# ------------------ #
+# Analysis Constants
+# ------------------ #
+
+# Common VPN protocols
 VPN_PROTOCOLS = ["OpenVPN", "IKEv2", "L2P2", "PPTP", "WireGuard", "SSTP"]
 
-# Global variables
+# ---------------- #
+# Global Variables
+# ---------------- #
+
 pcap_filename = None
+
 
 """
   ____ _       _           _                 
  / ___| | ___ | |__   __ _| |                
 | |  _| |/ _ \| '_ \ / _` | |                
 | |_| | | (_) | |_) | (_| | |                
- \____|_|\___/|_.__/ \__,_|_|                
-                                             
+ \____|_|\___/|_.__/ \__,_|_|                                                            
  _____                 _   _                 
 |  ___|   _ _ __   ___| |_(_) ___  _ __  ___ 
 | |_ | | | | '_ \ / __| __| |/ _ \| '_ \/ __|
@@ -124,9 +147,9 @@ def close_db_connection(cursor, connection):
     if connection:
         connection.close()
 
-# --------------------------------------------------------- #
-# Functions to fetch and certain data from database tables. #
-# --------------------------------------------------------- #
+# ----------------------------------------------------------------- #
+# Functions to fetch and compare certain data from database tables. #
+# ----------------------------------------------------------------- #
 
 def fetch_boolean_status(cursor, tb_name, col_name):
     cursor.execute(f"SELECT * FROM {tb_name} WHERE {col_name} = 0;")
@@ -157,11 +180,13 @@ def fetch_and_compare(cursor, data, sql_command, values):
 
 
 def update_where(cursor, connection, sql_command, values):
+    """Update the database table with the specified values."""
     cursor.execute(f"{sql_command}", values)
     connection.commit()
 
 
 def update_where_and(cursor, connection, tb_name, col_name, pkid, data, values):
+    """Update the database table with the specified values and conditions."""
     cursor.execute(
         f"""
         UPDATE {tb_name}
@@ -211,7 +236,14 @@ def create_database_and_tables():
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DATABASE_NAME}")
         cursor.execute(f"USE {DATABASE_NAME}")
 
-        # Create tables for the network analyzer
+        """
+        The ip_addresses table stores IP addresses of devices on the
+        network. It includes when each IP was first and last seen. IPs
+        are added with a NIC's MAC address. The nic_record and 
+        nic_previous_ips tables reference ip_addresses to track current 
+        and previous IPs associated with NICs. This helps the network
+        analyzer detail device interactions with the network.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ip_addresses (
                 ip_address VARCHAR(45) PRIMARY KEY,
@@ -225,6 +257,12 @@ def create_database_and_tables():
             )
         """)
 
+        """
+        The captured_packets table stores raw network traffic packets.
+        It is also known as the raw_packets table. This table contains
+        only raw packet data without any additional information,
+        speculation, or statistical analysis.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS captured_packets (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -244,6 +282,11 @@ def create_database_and_tables():
             )
         """)
 
+        """
+        The nic_record table stores information about NICs, identified
+        by their MAC address and last known IP. Each new NIC on the
+        network gets a record in this table.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS nic_record (
                 mac_address VARCHAR(17) PRIMARY KEY,
@@ -253,11 +296,20 @@ def create_database_and_tables():
                 manufacturer VARCHAR(255),
                 last_known_location VARCHAR(255),
                 FOREIGN KEY (last_known_ip)
-                    REFERENCES ip_addresses(ip_address) 
-                    ON DELETE SET NULL
+                    REFERENCES ip_addresses(ip_address) ON DELETE SET NULL
             )
         """)
 
+        """
+        The nic_previous_ips table keeps a history of IP addresses
+        previously associated with a NIC. This tracks changes in IP
+        addresses over time for each NIC.
+
+        Provides a way to track which NIC was associated with which IP
+        address at a given time. This is useful for diagnosing any 
+        suspicious activity or changes in IP addresses associated and
+        can pinpoint back to the NIC if needed.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS nic_previous_ips (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -272,9 +324,24 @@ def create_database_and_tables():
             )
         """)
 
+        """
+        The analyzed_packets table stores information about analyzed
+        packets. It includes fields indicating if the packet is related
+        to VPN or ARP, along with other analysis results.
+
+        This table provides a one-to-one relationship with the captured
+        packets table. This just extracts obvious information from the
+        packets so a script or deep learning model can inspect the data
+        and make a decision based on the information provided as fast 
+        as possible.
+
+        Ideally this would have a large range columns of data points
+        that can be extracted from the packets to help the model make a
+        decision on the packet traffic.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS analyzed_packets (
-                id INT Primary Key,
+                id INT PRIMARY KEY,
                 packet_size INT,
                 is_vpn TINYINT DEFAULT 0,
                 is_arp TINYINT DEFAULT 0,
@@ -283,6 +350,19 @@ def create_database_and_tables():
             )
         """)
 
+        """
+        The devices table stores information about devices associated
+        with NICs on the network. Gathering this information is a tad
+        more tedious and would ideally include details such as
+        device name, type, OS, manufacturer, model, and more.
+
+        This table might not get filled as quickly as the others, and
+        might require another script or service that is able to gather
+        this information from the devices themselves. We think it a
+        script that could test the device and prompt it commands and
+        based on those command outputs, it could determine the devices
+        information and store it in this table.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS devices (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -296,10 +376,19 @@ def create_database_and_tables():
                 location VARCHAR(255),
                 purchase_date DATE,
                 FOREIGN KEY (associated_NIC)
-                    REFERENCES nic_record(mac_address) On DELETE SET NULL
+                    REFERENCES nic_record(mac_address) ON DELETE SET NULL
             )
         """)
 
+        """
+        The nic_stats table stores statistical data about NICs,
+        including packets sent and received, ARP packets sent, and
+        whether the NIC is currently a source of traffic.
+
+        Ideally this table would have a large range of columns as well
+        that could be extracted from the packets to help the model make
+        a decision on the behavior of the NICs on the network.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS nic_stats (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -312,8 +401,14 @@ def create_database_and_tables():
                 FOREIGN KEY (nic)
                     REFERENCES nic_record(mac_address) ON DELETE SET NULL
             )
-        """)  
+        """)
 
+        """
+        The network_stats table stores various statistics about general
+        network traffic, including average and mean packet sizes, pack-
+        et rates, and information about the most common protocols and 
+        IPs.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS network_stats (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -340,6 +435,11 @@ def create_database_and_tables():
             )
         """)
 
+        """
+        The baselines table stores baseline data for NICs, including
+        various packet statistics and the times when the baseline was
+        established and last updated.
+        """
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS baselines (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -359,6 +459,7 @@ def create_database_and_tables():
                     REFERENCES nic_record(mac_address) ON DELETE SET NULL
             )
         """)
+
     except mysql.Error as err:
         print(f"Error creating database or tables: {err}")
         sys.exit()
@@ -876,8 +977,7 @@ def packet_analysis():
 | __ )  __ _ ___  ___| (_)_ __   ___ 
 |  _ \ / _` / __|/ _ \ | | '_ \ / _ \
 | |_) | (_| \__ \  __/ | | | | |  __/
-|____/ \__,_|___/\___|_|_|_| |_|\___|
-                                     
+|____/ \__,_|___/\___|_|_|_| |_|\___|                                    
  ____            _   _               
 / ___|  ___  ___| |_(_) ___  _ __    
 \___ \ / _ \/ __| __| |/ _ \| '_ \   
