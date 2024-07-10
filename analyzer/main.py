@@ -17,9 +17,10 @@
 /_/   \_\_| |_|\__,_|_|\__, /___\___|_|   
                        |___/              
 """
-
+import csv
 import re
-import os, sys
+import os
+import sys
 import threading
 import time
 import mysql.connector as mysql
@@ -66,7 +67,7 @@ DATABASE_NAME = "network"
 TABLE_NAME = "captured_packets"
 
 # Scapy uses this interface name for packet capture stage
-INTERFACE_NAME = "Ethernet 2" 
+INTERFACE_NAME = "enp3s0"
 
 # Capture connection
 DB_CONFIG_1 = {
@@ -95,12 +96,21 @@ DB_CONFIG_3 = {
     'auth_plugin': 'mysql_native_password'
 }
 
+# Local record connection
+DB_CONFIG_4 = {
+    'user': 'user4',
+    'password': 'password4',
+    'host': 'localhost',
+    'port': 3306,
+    'auth_plugin': 'mysql_native_password'
+}
+
 # Capture Constants
-PACKET_LIMIT = 1000 # Maximum number of packets to capture
+PACKET_LIMIT = 1000  # Maximum number of packets to capture
 TIMEOUT = 30  # Capture timeout in seconds
 
 # Output directory for PCAP files
-OUTPUT_DIR = "pcap_files" 
+OUTPUT_DIR = "files"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ------------------ #
@@ -116,6 +126,12 @@ VPN_PROTOCOLS = ["OpenVPN", "IKEv2", "L2P2", "PPTP", "WireGuard", "SSTP"]
 
 pcap_filename = None
 
+pending_pcap_files = []
+local_nic_record = []
+pending_nic_record = []
+
+pause_capture_inserts = False
+not_analyzed_count = 0
 
 """
   ____ _       _           _                 
@@ -135,6 +151,7 @@ pcap_filename = None
 # Functions to connect and close the database connection. #
 # ------------------------------------------------------- #
 
+
 def connect_to_db(db_config):
     connection = mysql.connect(**db_config)
     cursor = connection.cursor()
@@ -151,6 +168,7 @@ def close_db_connection(cursor, connection):
 # Functions to fetch and compare certain data from database tables. #
 # ----------------------------------------------------------------- #
 
+
 def fetch_boolean_status(cursor, tb_name, col_name):
     cursor.execute(f"SELECT * FROM {tb_name} WHERE {col_name} = 0;")
     result = cursor.fetchone()
@@ -164,8 +182,16 @@ def fetch_primary_key(cursor, sql_command):
     cursor.execute(f"{sql_command}")
     result = cursor.fetchone()
     if result is not None:
-        return False #If the primary key exists
+        return False  # If the primary key exists
     return True
+
+
+def fetch_count(cursor, sql_command):
+    """Fetch the count of rows in a table."""
+    cursor.execute(f"USE {DATABASE_NAME}")
+    cursor.execute(f"{sql_command}")
+    result = cursor.fetchone()
+    return result[0]
 
 
 def fetch_and_compare(cursor, data, sql_command, values):
@@ -179,13 +205,12 @@ def fetch_and_compare(cursor, data, sql_command, values):
     return False
 
 
-def update_where(cursor, connection, sql_command, values):
+def update_where(cursor, sql_command, values):
     """Update the database table with the specified values."""
     cursor.execute(f"{sql_command}", values)
-    connection.commit()
 
 
-def update_where_and(cursor, connection, tb_name, col_name, pkid, data, values):
+def update_where_and(cursor, tb_name, col_name, pkid, data, values):
     """Update the database table with the specified values and conditions."""
     cursor.execute(
         f"""
@@ -196,12 +221,17 @@ def update_where_and(cursor, connection, tb_name, col_name, pkid, data, values):
         """,
         values
     )
-    connection.commit()
 
 
-def execute_and_commit(cursor, connection, sql_command, values):
-    cursor.execute(f"{sql_command}", values)
-    connection.commit()
+def execute_queries(cursor, queries):
+    cursor.execute(f"USE {DATABASE_NAME}")
+
+    try:
+        for query in queries:
+            cursor.execute(query)
+    except mysql.Error as err:
+        print(f"Error executing queries: {err} {query}")
+        sys.exit()
 
 
 """
@@ -230,241 +260,310 @@ with the specified names and columns.
 """
 
 
-def create_database_and_tables():
-    cursor, connection = connect_to_db(DB_CONFIG_1)
+def create_database(cursor):
     try:
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DATABASE_NAME}")
-        cursor.execute(f"USE {DATABASE_NAME}")
+    except mysql.Error as err:
+        print(f"Error creating database: {err}")
+        sys.exit()
 
-        """
-        The ip_addresses table stores IP addresses of devices on the
-        network. It includes when each IP was first and last seen. IPs
-        are added with a NIC's MAC address. The nic_record and 
-        nic_previous_ips tables reference ip_addresses to track current 
-        and previous IPs associated with NICs. This helps the network
-        analyzer detail device interactions with the network.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ip_addresses (
-                ip_address VARCHAR(45) PRIMARY KEY,
-                is_ipv6 TINYINT DEFAULT 0,
-                first_seen DATETIME,
-                last_seen DATETIME,
-                hostname VARCHAR(255),
-                subnet VARCHAR(45),
-                lease_expires DATETIME,
-                last_known_location VARCHAR(255)
-            )
-        """)
 
-        """
-        The captured_packets table stores raw network traffic packets.
-        It is also known as the raw_packets table. This table contains
-        only raw packet data without any additional information,
-        speculation, or statistical analysis.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS captured_packets (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                timestamp VARCHAR(50),
-                source_mac VARCHAR(17),
-                destination_mac VARCHAR(17),
-                source_ip VARCHAR(45),
-                destination_ip VARCHAR(45),
-                source_port INT,
-                destination_port INT,
-                ethernet_type VARCHAR(50),
-                network_protocol VARCHAR(50),
-                transport_protocol VARCHAR(50),
-                application_protocol VARCHAR(100),
-                payload BLOB,
-                analyzed TINYINT DEFAULT 0
-            )
-        """)
+def create_tables(cursor):
+    global fetched_nic_record
 
+    tables = [
         """
-        The nic_record table stores information about NICs, identified
-        by their MAC address and last known IP. Each new NIC on the
-        network gets a record in this table.
+        CREATE TABLE IF NOT EXISTS csv_files (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            file_name VARCHAR(255),
+            start_datetime VARCHAR(50),
+            end_datetime VARCHAR(50)
+        )
+        """,
         """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS nic_record (
-                mac_address VARCHAR(17) PRIMARY KEY,
-                last_known_ip VARCHAR(45),
-                first_seen VARCHAR(50),
-                last_seen VARCHAR(50),
-                manufacturer VARCHAR(255),
-                last_known_location VARCHAR(255),
-                FOREIGN KEY (last_known_ip)
-                    REFERENCES ip_addresses(ip_address) ON DELETE SET NULL
-            )
-        """)
+        CREATE TABLE IF NOT EXISTS ip_addresses (
+            ip_address VARCHAR(45) PRIMARY KEY,
+            is_ipv6 TINYINT DEFAULT 0,
+            first_seen DATETIME,
+            last_seen DATETIME,
+            hostname VARCHAR(255),
+            subnet VARCHAR(45),
+            lease_expires DATETIME,
+            last_known_location VARCHAR(255)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS captured_packets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            timestamp VARCHAR(50),
+            source_mac VARCHAR(17),
+            destination_mac VARCHAR(17),
+            source_ip VARCHAR(45),
+            destination_ip VARCHAR(45),
+            source_port INT,
+            destination_port INT,
+            ethernet_type VARCHAR(50),
+            network_protocol VARCHAR(50),
+            transport_protocol VARCHAR(50),
+            application_protocol VARCHAR(100),
+            payload BLOB,
+            analyzed TINYINT DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS nic_record (
+            mac_address VARCHAR(17) PRIMARY KEY,
+            last_known_ip VARCHAR(45),
+            first_seen VARCHAR(50),
+            last_seen VARCHAR(50),
+            manufacturer VARCHAR(255),
+            last_known_location VARCHAR(255),
+            FOREIGN KEY (last_known_ip)
+                REFERENCES ip_addresses(ip_address) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS nic_previous_ips (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            mac_address VARCHAR(17),
+            ip_address VARCHAR(45),
+            first_seen VARCHAR(50),
+            last_seen VARCHAR(50),
+            FOREIGN KEY (mac_address)
+                REFERENCES nic_record(mac_address) ON DELETE CASCADE,
+            FOREIGN KEY (ip_address)
+                REFERENCES ip_addresses(ip_address) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS devices (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            associated_NIC VARCHAR(17),
+            device_name VARCHAR(255),
+            device_type VARCHAR(255),
+            operating_system VARCHAR(255),
+            manufacturer VARCHAR(255),
+            model VARCHAR(255),
+            serial_number VARCHAR(255),
+            location VARCHAR(255),
+            purchase_date DATE,
+            FOREIGN KEY (associated_NIC)
+                REFERENCES nic_record(mac_address) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS nic_stats (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nic VARCHAR(17),
+            last_updated VARCHAR(50),
+            is_source TINYINT DEFAULT 0,
+            tx_packet_count INT DEFAULT 0,
+            rx_packet_count INT DEFAULT 0,
+            sent_arp_count INT,
+            FOREIGN KEY (nic)
+                REFERENCES nic_record(mac_address) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS network_stats (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stat_name VARCHAR(255),
+            average_packet_size FLOAT,
+            mean_packet_size FLOAT,
+            average_packet_rate FLOAT,
+            mean_packet_rate FLOAT,
+            total_packets INT,
+            peak_packet_rate FLOAT,
+            peak_packet_rate_time VARCHAR(50),
+            peak_bandwidth FLOAT,
+            peak_bandwidth_time VARCHAR(50),
+            most_common_protocol VARCHAR(10),
+            most_common_source_ip VARCHAR(45),
+            most_common_destination_ip VARCHAR(45),
+            packet_error_rate FLOAT,
+            duplicate_packet_amount INT,
+            duplication_source_ip VARCHAR(45),
+            duplication_destination_ip VARCHAR(45),
+            started_calculation VARCHAR(50),
+            last_calculation VARCHAR(50),
+            time_period VARCHAR(10)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS baselines (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nic VARCHAR(17),
+            baseline_type VARCHAR(255),
+            established_time VARCHAR(50),
+            ended_time VARCHAR(50),
+            last_updated VARCHAR(50),
+            packet_count INT,
+            average_packet_size FLOAT,
+            mean_packet_size FLOAT,
+            average_packet_rate FLOAT,
+            mean_packet_rate FLOAT,
+            peak_packet_rate FLOAT,
+            finalized TINYINT DEFAULT 0,
+            FOREIGN KEY (nic)
+                REFERENCES nic_record(mac_address) ON DELETE SET NULL
+        )
+        """,
+    ]
 
-        """
-        The nic_previous_ips table keeps a history of IP addresses
-        previously associated with a NIC. This tracks changes in IP
-        addresses over time for each NIC.
+    execute_queries(cursor, tables)
 
-        Provides a way to track which NIC was associated with which IP
-        address at a given time. This is useful for diagnosing any 
-        suspicious activity or changes in IP addresses associated and
-        can pinpoint back to the NIC if needed.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS nic_previous_ips (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                mac_address VARCHAR(17),
-                ip_address VARCHAR(45),
-                first_seen VARCHAR(50),
-                last_seen VARCHAR(50),
-                FOREIGN KEY (mac_address)
-                    REFERENCES nic_record(mac_address) ON DELETE CASCADE,
-                FOREIGN KEY (ip_address)
-                    REFERENCES ip_addresses(ip_address) ON DELETE SET NULL
-            )
-        """)
 
+def create_triggers(cursor):
+    triggers = [
         """
-        The analyzed_packets table stores information about analyzed
-        packets. It includes fields indicating if the packet is related
-        to VPN or ARP, along with other analysis results.
+        CREATE TRIGGER IF NOT EXISTS update_last_seen_trigger
+            AFTER UPDATE ON nic_record
+            FOR EACH ROW
+            BEGIN
+                UPDATE nic_stats
+                SET last_updated = NEW.last_seen
+                WHERE nic = NEW.mac_address;
+            END;
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS insert_new_row_trigger
+            AFTER INSERT ON nic_record
+            FOR EACH ROW
+            BEGIN
+                INSERT INTO nic_stats (nic)
+                VALUES (NEW.mac_address);
+            END;
+        """
+    ]
 
-        This table provides a one-to-one relationship with the captured
-        packets table. This just extracts obvious information from the
-        packets so a script or deep learning model can inspect the data
-        and make a decision based on the information provided as fast 
-        as possible.
+    execute_queries(cursor, triggers)
 
-        Ideally this would have a large range columns of data points
-        that can be extracted from the packets to help the model make a
-        decision on the packet traffic.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS analyzed_packets (
-                id INT PRIMARY KEY,
-                packet_size INT,
-                is_vpn TINYINT DEFAULT 0,
-                is_arp TINYINT DEFAULT 0,
-                FOREIGN KEY (id)
-                    REFERENCES captured_packets(id) ON DELETE CASCADE
-            )
-        """)
 
-        """
-        The devices table stores information about devices associated
-        with NICs on the network. Gathering this information is a tad
-        more tedious and would ideally include details such as
-        device name, type, OS, manufacturer, model, and more.
-
-        This table might not get filled as quickly as the others, and
-        might require another script or service that is able to gather
-        this information from the devices themselves. We think it a
-        script that could test the device and prompt it commands and
-        based on those command outputs, it could determine the devices
-        information and store it in this table.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS devices (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                associated_NIC VARCHAR(17),
-                device_name VARCHAR(255),
-                device_type VARCHAR(255),
-                operating_system VARCHAR(255),
-                manufacturer VARCHAR(255),
-                model VARCHAR(255),
-                serial_number VARCHAR(255),
-                location VARCHAR(255),
-                purchase_date DATE,
-                FOREIGN KEY (associated_NIC)
-                    REFERENCES nic_record(mac_address) ON DELETE SET NULL
-            )
-        """)
-
-        """
-        The nic_stats table stores statistical data about NICs,
-        including packets sent and received, ARP packets sent, and
-        whether the NIC is currently a source of traffic.
-
-        Ideally this table would have a large range of columns as well
-        that could be extracted from the packets to help the model make
-        a decision on the behavior of the NICs on the network.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS nic_stats (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                nic VARCHAR(17),
-                last_updated VARCHAR(50),
-                is_source TINYINT DEFAULT 0,
-                tx_packet_count INT DEFAULT 0,
-                rx_packet_count INT DEFAULT 0,
-                sent_arp_count INT,
-                FOREIGN KEY (nic)
-                    REFERENCES nic_record(mac_address) ON DELETE SET NULL
-            )
-        """)
-
-        """
-        The network_stats table stores various statistics about general
-        network traffic, including average and mean packet sizes, pack-
-        et rates, and information about the most common protocols and 
-        IPs.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS network_stats (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                stat_name VARCHAR(255),
-                average_packet_size FLOAT,
-                mean_packet_size FLOAT,
-                average_packet_rate FLOAT,
-                mean_packet_rate FLOAT,
-                total_packets INT,
-                peak_packet_rate FLOAT,
-                peak_packet_rate_time VARCHAR(50),
-                peak_bandwidth FLOAT,
-                peak_bandwidth_time VARCHAR(50),
-                most_common_protocol VARCHAR(10),
-                most_common_source_ip VARCHAR(45),
-                most_common_destination_ip VARCHAR(45),
-                packet_error_rate FLOAT,
-                duplicate_packet_amount INT,
-                duplication_source_ip VARCHAR(45),
-                duplication_destination_ip VARCHAR(45),
-                started_calculation VARCHAR(50),
-                last_calculation VARCHAR(50),
-                time_period VARCHAR(10)
-            )
-        """)
-
-        """
-        The baselines table stores baseline data for NICs, including
-        various packet statistics and the times when the baseline was
-        established and last updated.
-        """
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS baselines (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                nic VARCHAR(17),
-                baseline_type VARCHAR(255),
-                established_time VARCHAR(50),
-                ended_time VARCHAR(50),
-                last_updated VARCHAR(50),
-                packet_count INT,
-                average_packet_size FLOAT,
-                mean_packet_size FLOAT,
-                average_packet_rate FLOAT,
-                mean_packet_rate FLOAT,
-                peak_packet_rate FLOAT,
-                finalized TINYINT DEFAULT 0,
-                FOREIGN KEY (nic)
-                    REFERENCES nic_record(mac_address) ON DELETE SET NULL
-            )
-        """)
-
+def create_and_config_database():
+    try:
+        cursor, connection = connect_to_db(DB_CONFIG_1)
+        create_database(cursor)
+        create_tables(cursor)
+        create_triggers(cursor)
+        connection.commit()
     except mysql.Error as err:
         print(f"Error creating database or tables: {err}")
         sys.exit()
     finally:
         close_db_connection(cursor, connection)
+
+
+def db_to_csv(cursor, connection):
+    global OUTPUT_DIR
+    global pause_capture_inserts
+
+    # Step 1: Find the highest id number in csv_files
+    cursor.execute("SELECT MAX(id) FROM csv_files")
+    max_id_result = cursor.fetchone()
+    next_id = 1 if max_id_result[0] is None else max_id_result[0] + 1
+
+    # Define the CSV file name based on the next_id
+    csv_file_name = f"{next_id}.csv"
+    csv_file_path = os.path.join(OUTPUT_DIR, csv_file_name)
+
+    # Step 2: Fetch the first and last timestamp from captured_packets
+    cursor.execute(
+        "SELECT MIN(timestamp), MAX(timestamp) FROM captured_packets")
+    timestamps = cursor.fetchone()
+
+    start_datetime, end_datetime = timestamps if timestamps else (None, None)
+
+    # Fetch data from captured_packets
+    cursor.execute("SELECT * FROM captured_packets ORDER BY timestamp")
+    result = cursor.fetchall()
+
+    # Step 3: Write data to CSV
+    headers = [i[0] for i in cursor.description]
+    with open(csv_file_path, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(headers)
+        writer.writerows(result)
+
+    # Step 4: Insert new row into csv_files
+    if start_datetime and end_datetime:
+        cursor.execute(
+            """
+            INSERT INTO csv_files (id, file_name, start_datetime, end_datetime)
+            VALUES (%s, %s, %s, %s)
+            """, (next_id, csv_file_name, start_datetime, end_datetime)
+        )
+        connection.commit()
+
+    # Step 5: Truncate captured_packets
+    cursor.execute("TRUNCATE TABLE captured_packets")
+    connection.commit()
+
+    pause_capture_inserts = False
+
+
+def fetch_and_insert_database():
+    global pause_capture_inserts
+
+    while True:
+        try:
+            cursor, connection = connect_to_db(DB_CONFIG_4)
+            cursor.execute(f"USE {DATABASE_NAME}")
+        except mysql.Error as err:
+            print(f"Error connecting to database: {err}")
+            time.sleep(10)  # Retry after a short delay
+            continue
+
+        try:
+            cursor.execute("SELECT COUNT(*) FROM captured_packets;")
+            row_count = cursor.fetchone()[0]
+
+            if row_count >= 5000:
+                pause_capture_inserts = True
+                db_to_csv(cursor, connection)
+            else:
+                pause_capture_inserts = False
+
+            connection.commit()
+        except mysql.Error as err:
+            print(f"Error executing SQL query to count packets: {err}")
+
+        try:
+            time.sleep(60)  # Delay to prevent rapid polling
+
+            if pending_nic_record:
+                for nic in pending_nic_record:
+                    try:
+                        cursor.execute(
+                            """
+                            INSERT INTO nic_record (
+                                mac_address,
+                                last_updated
+                            ) VALUES (%s, %s);
+                            """,
+                            (nic["mac_address"], nic["last_updated"])
+                        )
+                    except mysql.Error as err:
+                        print(f"Error inserting NIC record: {err}")
+
+                connection.commit()
+                pending_nic_record.clear()  # Clear pending records after insertion
+
+                try:
+                    cursor.execute("SELECT mac_address FROM nic_record;")
+                    mac_addresses = cursor.fetchall()
+                    fetched_nic_record.clear()  # Clear the local copy before updating
+                    if mac_addresses:
+                        for mac_address in mac_addresses:
+                            fetched_nic_record.append(mac_address[0])
+                    connection.commit()
+                except mysql.Error as err:
+                    print(f"Error fetching NIC records: {err}")
+
+        except mysql.Error as err:
+            print(f"Error during NIC records operation: {err}")
+        finally:
+            close_db_connection(cursor, connection)
+            time.sleep(10)
 
 
 """
@@ -496,11 +595,12 @@ traffic and store the packets in the database for further analysis.
 # Supporting functions for the capture_traffic function. #
 # ------------------------------------------------------ #
 
+
 def determine_protocol(packet):
     """
     Determine the protocol of the packet by
     extracting layer information from the packet.
-    
+
     Returns an array of protocol names that are found
     in the packet.
     """
@@ -537,6 +637,7 @@ def determine_protocol(packet):
 
     return protocol_array
 
+
 # ----------------------------------------------------------------- #
 # Secondary function to insert packet data into the database table. #
 # ----------------------------------------------------------------- #
@@ -556,86 +657,67 @@ def packet_to_db():
     determine_protocol function to extract the protocol information
     from the packets.
     """
+    global not_analyzed_count
     cursor, connection = connect_to_db(DB_CONFIG_1)
-    packets = rdpcap(pcap_filename)
 
-    for packet in packets:
-        protocol_array = determine_protocol(packet)
-        timestamp = datetime.fromtimestamp(float(packet.time))
+    if pending_pcap_files:
+        packets = rdpcap(pending_pcap_files[0])
+        pending_pcap_files.pop(0)
 
-        source_mac = (
-            packet[Ether].src if Ether in packet else None
-        )
+    try:
+        for packet in packets:
+            protocol_array = determine_protocol(packet)
+            timestamp = datetime.fromtimestamp(float(packet.time))
 
-        destination_mac = (
-            packet[Ether].dst if Ether in packet else None
-        )
+            source_mac = packet[Ether].src if Ether in packet else None
+            destination_mac = packet[Ether].dst if Ether in packet else None
+            source_ip = packet[IP].src if IP in packet else packet[IPv6].src if IPv6 in packet else None
+            destination_ip = packet[IP].dst if IP in packet else None
+            source_port = packet.sport if TCP in packet else packet[
+                UDP].sport if UDP in packet else None
+            destination_port = packet.dport if TCP in packet else packet[
+                UDP].dport if UDP in packet else None
+            ethernet_type = str(protocol_array[0]).strip() if len(
+                protocol_array) >= 1 else None
+            network_protocol = str(protocol_array[1]).strip() if len(
+                protocol_array) >= 2 else None
+            transport_protocol = str(protocol_array[2]).strip() if len(
+                protocol_array) >= 3 else None
+            application_protocol = str(protocol_array[3]).strip() if len(
+                protocol_array) >= 4 else None
+            payload = bytes(packet[Raw].load) if Raw in packet else None
 
-        source_ip = (
-            packet[IP].src if IP in packet
-            else packet[IPv6].src if IPv6 in packet
-            else None
-        )
+            insert_query = (
+                f"""INSERT INTO {TABLE_NAME} (
+                    timestamp, source_mac, destination_mac, source_ip,
+                    destination_ip, source_port, destination_port,
+                    ethernet_type, network_protocol, transport_protocol,
+                    application_protocol, payload
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            )
 
-        destination_ip = (
-            packet[IP].dst if IP in packet else None
-        )
+            try:
+                cursor.execute(f"USE {DATABASE_NAME}")
+                cursor.execute(insert_query, (
+                    timestamp, source_mac, destination_mac, source_ip,
+                    destination_ip, source_port, destination_port,
+                    ethernet_type, network_protocol, transport_protocol,
+                    application_protocol, payload))
+            except mysql.Error as err:
+                print(f"Error inserting packet into database DETAILS: {err}")
 
-        source_port = (
-            packet.sport if TCP in packet 
-            else packet[UDP].sport if UDP in packet 
-            else None
-        )
+        connection.commit()
 
-        destination_port = (
-            packet.dport if TCP in packet 
-            else packet[UDP].dport if UDP in packet 
-            else None
-        )
+    except Exception as e:
+        print(f"Error extracting packet data: {e}")
 
-        ethernet_type = (
-            str(protocol_array[0]).strip() 
-            if len(protocol_array) >= 1 else None
-        )
-
-        network_protocol = (
-            str(protocol_array[1]).strip() 
-            if len(protocol_array) >= 2 else None
-        )
-
-        transport_protocol = (
-            str(protocol_array[2]).strip() 
-            if len(protocol_array) >= 3 else None
-        )
-
-        application_protocol = (
-            str(protocol_array[3]).strip() 
-            if len(protocol_array) >= 4 else None
-        )
-
-        payload = bytes(packet[Raw].load) if Raw in packet else None
-
-        insert_query = (
-            f"""INSERT INTO {TABLE_NAME} (
-                timestamp, source_mac, destination_mac, source_ip,
-                destination_ip, source_port, destination_port,
-                ethernet_type, network_protocol, transport_protocol,
-                application_protocol, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
-        )
-
-        try:
-            cursor.execute(f"USE {DATABASE_NAME}")
-            cursor.execute(insert_query, (
-                timestamp, source_mac, destination_mac, source_ip,
-                destination_ip, source_port, destination_port,
-                ethernet_type, network_protocol, transport_protocol,
-                application_protocol, payload))
-            connection.commit()
-        except mysql.Error as err:
-            print(f"Error inserting packet into database DETAILS: {err}")
+    not_analyzed_count = fetch_count(
+        cursor,
+        "SELECT COUNT(*) FROM captured_packets WHERE analyzed = 0"
+    )
 
     close_db_connection(cursor, connection)
+
 
 # ----------------------------------------------- #
 # Primary function that captures network traffic.
@@ -647,6 +729,9 @@ def capture_traffic():
     packets in a pcap file.
     """
     global pcap_filename
+    global not_analyzed_count
+
+    global pending_pcap_files
 
     while True:
         start_time = time.time()
@@ -675,12 +760,16 @@ def capture_traffic():
                 f"{INTERFACE_NAME}-({packet_time_started})-({packet_time_ended}).pcap"
             )
 
+            pending_pcap_files.append(pcap_filename)
             wrpcap(pcap_filename, captured_packets)
 
         except Exception as e:
             print(f"Error capturing traffic on {INTERFACE_NAME}: {e}")
         finally:
-            packet_to_db()
+            if not pause_capture_inserts:
+                packet_to_db()
+            else:
+                continue
 
 
 """
@@ -715,32 +804,33 @@ NIC and IP address in the network.
 # Supporting functions to analyze NIC and IP addresses information #
 # ---------------------------------------------------------------- #
 
-def is_nic_new(mac_address, cursor):
-    return fetch_primary_key(
-        cursor,
-        f"SELECT * FROM nic_record WHERE mac_address = '{mac_address}';"
-        )
+
+def is_nic_new(mac_address):
+    if mac_address not in local_nic_record or pending_nic_record:
+        return True
+    return False
 
 
 def has_ip_changed(mac_address, ip_address, cursor):
     return fetch_and_compare(
         cursor,
         ip_address,
-        "SELECT last_known_ip FROM nic_record WHERE mac_address = %s;", 
+        "SELECT last_known_ip FROM nic_record WHERE mac_address = %s;",
         (mac_address,)
-        )
+    )
 
 
 def is_ip_new(ip_address, cursor):
     return fetch_primary_key(
         cursor,
         f"SELECT * FROM ip_addresses WHERE ip_address = '{ip_address}';"
-        )
+    )
 
 
 def check_for_vpn(protocol):
     # Check if the packet contains a VPN protocol
     return protocol in VPN_PROTOCOLS
+
 
 # -------------------------------------------- #
 # Secondary functions in the analysis process. #
@@ -759,10 +849,10 @@ def analyze_packet():
     pass
 
 
-def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
+def analyze_nic(mac_address, timestamp, cursor):
     """
     Analyze the NIC and retrieve relevant data points.
-    
+
     The use of 'if mac_address' is to ensure that the MAC address is
     not empty or None. This is to prevent any errors that may occur
     specifically with ARP packets which do not contain a source MAC
@@ -773,26 +863,13 @@ def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
             If NIC is new, insert into nic_record and nic_stats.
             The is_nic_new function will return True if the NIC is new
             """
-            if is_nic_new(mac_address, cursor):
-                execute_and_commit(
-                    cursor, connection,
-                    """
-                    INSERT INTO nic_record (
-                        mac_address,
-                        first_seen
-                    ) VALUES (%s, %s);
-                    """,
-                    (mac_address, timestamp)
-                )
-                execute_and_commit(
-                    cursor, connection,
-                    """
-                    INSERT INTO nic_stats (
-                        nic,
-                        last_updated
-                    ) VALUES (%s, %s);
-                    """, 
-                    (mac_address, timestamp)
+            if is_nic_new(mac_address):
+                pending_nic_record.append(
+                    {
+                        "mac_address": mac_address,
+                        "first_seen": timestamp,
+                        "last_seen": timestamp,
+                    }
                 )
             else:
                 """
@@ -800,29 +877,13 @@ def analyze_nic(mac_address, ip_address, timestamp, cursor, connection):
                 last_seen and last_updated timestamps in their
                 respective tables. 
                 """
-                execute_and_commit(
-                    cursor, connection,
-                    """
-                    UPDATE nic_record
-                        SET last_seen = %s
-                        WHERE mac_address = %s;
-                    """,
-                    (timestamp, mac_address)
-                )
-                execute_and_commit(
-                    cursor, connection,
-                    """
-                    UPDATE nic_stats
-                        SET last_updated = %s
-                        WHERE nic = %s;
-                    """,
-                    (timestamp, mac_address)
-                )
+                local_nic_record[mac_address]["last_updated"] = timestamp
+
         except mysql.Error as err:
             print(f"Error: {err}")
 
 
-def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
+def analyze_ip(mac_address, ip_address, timestamp, cursor):
     """
     Analyze the IP address and retrieve relevant data points.
 
@@ -836,8 +897,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
             # Check if the IP address is new to the ip_addresses table
             if is_ip_new(ip_address, cursor):
                 is_ipv6 = 1 if ":" in ip_address else 0
-                execute_and_commit(
-                    cursor, connection, 
+                cursor.execute(
                     """
                     INSERT INTO ip_addresses (
                         ip_address,
@@ -847,8 +907,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                     """,
                     (ip_address, is_ipv6, timestamp)
                 )
-                execute_and_commit(
-                    cursor, connection,
+                cursor.execute(
                     """
                     UPDATE nic_record
                         SET last_known_ip = %s
@@ -856,8 +915,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                     """,
                     (ip_address, mac_address)
                 )
-                execute_and_commit(
-                    cursor, connection,
+                cursor.execute(
                     """
                     INSERT INTO nic_previous_ips (
                         mac_address,
@@ -870,8 +928,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                 )
 
                 if has_ip_changed(mac_address, ip_address, cursor):
-                    execute_and_commit(
-                        cursor, connection,
+                    cursor.execute(
                         """
                         UPDATE nic_record
                             SET last_known_ip = %s
@@ -879,8 +936,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                         """,
                         (ip_address, mac_address)
                     )
-                    execute_and_commit(
-                        cursor, connection,
+                    cursor.execute(
                         """
                         UPDATE ip_addresses
                             SET last_seen = %s
@@ -888,8 +944,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                         """,
                         (timestamp, ip_address)
                     )
-                    execute_and_commit(
-                        cursor, connection,
+                    cursor.execute(
                         """
                         INSERT INTO nic_previous_ips (
                             mac_address,
@@ -904,8 +959,7 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
         except mysql.Error as err:
             print(f"Error: {err}")
         finally:
-            execute_and_commit(
-                cursor, connection,
+            cursor.execute(
                 """
                 UPDATE ip_addresses
                     SET last_seen = %s
@@ -913,12 +967,12 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
                 """,
                 (timestamp, ip_address)
             )
-            execute_and_commit(
-                cursor, connection,
+            cursor.execute(
                 """
                 UPDATE nic_previous_ips
                     SET last_seen = %s
-                    WHERE mac_address = %s AND ip_address = %s;
+                    WHERE mac_address = %s
+                    AND ip_address = %s;
                 """,
                 (timestamp, mac_address, ip_address)
             )
@@ -927,20 +981,28 @@ def analyze_ip(mac_address, ip_address, timestamp, cursor, connection):
 # This is the primary function to analyze the packets
 # ------------------------------------------------- #
 
+
 def packet_analysis():
     while True:
         try:
             cursor, connection = connect_to_db(DB_CONFIG_2)
             cursor.execute(f"USE {DATABASE_NAME}")
-            cursor.execute("""
-                SELECT * FROM captured_packets WHERE analyzed = 0 ORDER BY id;
-            """)
-
+            time.sleep(2)
+            print("Fetching all unanalyzed packets")
+            cursor.execute(
+                """
+                SELECT * FROM captured_packets WHERE analyzed = 0 ORDER BY id LIMIT 1000;
+                """
+            )
             packets = cursor.fetchall()
 
             if packets:
+                print(f"Analyzing {len(packets)} packets...")
+
                 for packet in packets:
-                    # Variables used for clarity and troubleshooting
+                    """
+                    Variables used for clarity and troubleshooting
+
                     packet_id = packet[0]
                     timestamp = packet[1]
                     source_mac = packet[2]
@@ -954,58 +1016,47 @@ def packet_analysis():
                     transport_protocol = packet[10]
                     application_protocol = packet[11]
                     payload = packet[12]
+                    """
 
-                    analyze_packet() # Placeholder for future use
+                    analyze_packet()  # Placeholder for future use
 
-                    analyze_nic(
-                        source_mac, source_ip, timestamp, 
-                        cursor, connection
-                    )
-                    analyze_nic(
-                        destination_mac, destination_ip,
-                        timestamp, cursor, connection
-                    )
+                    analyze_nic(packet[2], packet[1], cursor)
+                    analyze_nic(packet[3], packet[1], cursor)
+                    # analyze_ip(packet[2], packet[4], packet[1], cursor)
+                    # analyze_ip(packet[3], packet[5], packet[1], cursor)
 
-                    analyze_ip(
-                        source_mac, source_ip, timestamp,
-                        cursor, connection
-                    )
-                    analyze_ip(
-                        destination_mac, destination_ip,
-                        timestamp, cursor, connection
-                    )
-                    
-                    execute_and_commit(
-                        cursor, connection,
+                    cursor.execute(
                         """
                         UPDATE nic_stats
                             SET tx_packet_count = tx_packet_count + 1
                             WHERE nic = %s;
                         """,
-                        (source_mac,)
+                        (packet[2],)
                     )
-                    
-                    #If statement is used to prevent errors with ARP packets
-                    if destination_mac:
-                        execute_and_commit(
-                            cursor, connection,
+
+                    # If statement is used to prevent
+                    # errors with ARP packets
+                    if packet[3]:
+                        cursor.execute(
                             """
                             UPDATE nic_stats
                                 SET rx_packet_count = rx_packet_count + 1
                                 WHERE nic = %s;
                             """,
-                            (destination_mac,)
+                            (packet[3],)
                         )
 
-                    execute_and_commit(
-                        cursor, connection,
+                    cursor.execute(
                         """
                         UPDATE captured_packets
                             SET analyzed = 1
                             WHERE id = %s;
                         """,
-                        (packet_id,)
+                        (packet[0],)
                     )
+
+                connection.commit()
+                print("Analysis complete.")
 
         except mysql.Error as err:
             print(f"Error: {err}")
@@ -1045,6 +1096,7 @@ havior.
 # Secondary functions to assist baseline_analysis. #
 # ------------------------------------------------ #
 
+
 def has_packet_count_changed(mac_address, total_packet_count, cursor):
     return fetch_and_compare(
         cursor, total_packet_count,
@@ -1056,47 +1108,48 @@ def has_packet_count_changed(mac_address, total_packet_count, cursor):
 
 
 def has_packet_rate_changed(mac_address, packet_rate, cursor):
-    #future use
+    # future use
     pass
 
 
 def has_packet_size_changed(mac_address, packet_size, cursor):
-    #future use
+    # future use
     pass
 
 
 def has_peak_packet_rate_changed(mac_address, peak_packet_rate, cursor):
-    #future use
+    # future use
     pass
 
 
 def has_peak_bandwidth_changed(mac_address, peak_bandwidth, cursor):
-    #future use
+    # future use
     pass
 
 
 def has_most_common_protocol_changed(mac_address, protocol, cursor):
-    #future use
+    # future use
     pass
 
 
 def has_most_common_source_ip_changed(mac_address, source_ip, cursor):
-    #future use
+    # future use
     pass
 
 
-def has_most_common_destination_ip_changed(mac_address, destination_ip, cursor):
-    #future use
+def has_most_common_dst_ip_changed(mac_address, destination_ip, cursor):
+    # future use
     pass
 
 
-def has_top_five_destination_nic_changed(mac_address, packet_error_rate, cursor):
-    #future use
+def has_top_five_dst_nic_changed(mac_address, packet_error_rate, cursor):
+    # future use
     pass
 
 # ----------------------------------------------------------------- #
 # Primary function that builds and modifies baselines on stat data. #
 # ----------------------------------------------------------------- #
+
 
 def baseline_analysis():
     """
@@ -1114,23 +1167,24 @@ def baseline_analysis():
         cursor, connection = connect_to_db(DB_CONFIG_3)
         cursor.execute(f"USE {DATABASE_NAME}")
         try:
-            #Ensures the server does not get overloaded with requests
+            # Ensures the server does not get overloaded with requests
             time.sleep(30)
 
             cursor.execute("""
                 SELECT baseline_type FROM baselines
                     WHERE finalized = 0 AND baseline_type = 'daily';
                 """
-            )
+                           )
             rows = cursor.fetchall()
             if rows is not None:
                 for row in rows:
                     nic = row[1]
             else:
-                continue #if None, continue to next iteration
-                
+                continue  # if None, continue to next iteration
+
+            connection.commit()
         except mysql.Error as err:
-            print(f"Error executing SQL query: {err}")
+            print(f"Error executing SQL query 4: {err}")
         finally:
             close_db_connection(cursor, connection)
 
@@ -1160,17 +1214,21 @@ analyze the packets to detect any changes in behavior which is
 important for network security and monitoring.
 """
 
-def main():
-    create_database_and_tables()
 
+def main():
+    create_and_config_database()
+
+    fetch_insert_thread = threading.Thread(target=fetch_and_insert_database)
     capture_thread = threading.Thread(target=capture_traffic)
     analysis_thread = threading.Thread(target=packet_analysis)
     baseline_thread = threading.Thread(target=baseline_analysis)
 
+    fetch_insert_thread.start()
     capture_thread.start()
     analysis_thread.start()
     baseline_thread.start()
 
+    fetch_insert_thread.join()
     capture_thread.join()
     analysis_thread.join()
     baseline_thread.join()
